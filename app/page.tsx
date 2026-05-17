@@ -3,17 +3,11 @@
 import { useState } from "react";
 import CadViewer from "@/components/CadViewer";
 import { createFeatureStudioCode } from "@/lib/createFeatureStudioCode";
-import { createParametricCADPrompt } from "@/lib/createParametricCADPrompt";
-import { applyProceduralGenerators } from "@/lib/proceduralGenerators";
-
-declare global {
-  interface Window {
-    puter: any;
-  }
-}
+import { applyProceduralGenerators } from "@/lib/proceduralCad";
 
 export default function Home() {
   const [prompt, setPrompt] = useState("");
+  const [manualJson, setManualJson] = useState("");
   const [response, setResponse] = useState("");
   const [featureScript, setFeatureScript] = useState("");
   const [onshapeUrl, setOnshapeUrl] = useState("");
@@ -22,7 +16,29 @@ export default function Home() {
   const [creatingOnshape, setCreatingOnshape] = useState(false);
 
   function cleanJsonText(text: string) {
-    return text.replace(/```json/g, "").replace(/```/g, "").trim();
+    let cleaned = text.trim();
+
+    cleaned = cleaned.replace(/```json/gi, "");
+    cleaned = cleaned.replace(/```/g, "");
+    cleaned = cleaned.trim();
+
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+    }
+
+    return cleaned;
+  }
+
+  function loadCadJson(cadJson: any) {
+    const proceduralCad = applyProceduralGenerators(cadJson);
+
+    setResponse(JSON.stringify(proceduralCad, null, 2));
+    setCadJsonObj(proceduralCad);
+    setFeatureScript(createFeatureStudioCode(proceduralCad));
+    setOnshapeUrl("");
   }
 
   async function generateCAD() {
@@ -38,77 +54,134 @@ export default function Home() {
     setCadJsonObj(null);
 
     try {
-      if (!window.puter || !window.puter.ai) {
-        setResponse(
-          "Puter AI is still loading. Refresh, wait 3 seconds, then try again."
-        );
-        setLoading(false);
-        return;
+      const aiRes = await fetch("/api/ai", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ prompt }),
+      });
+
+      const aiData = await aiRes.json();
+
+      if (!aiRes.ok) {
+        throw new Error(aiData.error || "OpenRouter AI request failed.");
       }
 
-      const result = await window.puter.ai.chat(
-        createParametricCADPrompt(prompt),
-        {
-          model: "gpt-4.1-mini",
-        }
-      );
+      const cleaned = cleanJsonText(aiData.text);
+      const cadJson = JSON.parse(cleaned);
 
-      const content = result?.message?.content;
+      loadCadJson(cadJson);
+    } catch (err: any) {
+      console.warn("Handled AI error:", err);
 
-      let text = "";
-
-      if (Array.isArray(content)) {
-        text = content
-          .map((item: any) => item.text || JSON.stringify(item))
-          .join("\n");
-      } else if (typeof content === "string") {
-        text = content;
-      } else if (typeof result === "string") {
-        text = result;
-      } else {
-        text = JSON.stringify(result, null, 2);
-      }
-
-      const cleaned = cleanJsonText(text);
-
-      const rawCadJson = JSON.parse(cleaned);
-
-      const enhancedCadJson = applyProceduralGenerators(rawCadJson);
-
-      setResponse(JSON.stringify(enhancedCadJson, null, 2));
-
-      setCadJsonObj(enhancedCadJson);
-
-      setFeatureScript(createFeatureStudioCode(enhancedCadJson));
-    } catch (err) {
-      console.warn("Handled error:", err);
+      const message =
+        err?.message ||
+        err?.error ||
+        (typeof err === "string" ? err : JSON.stringify(err, null, 2));
 
       setResponse(
-        `Error: ${
-          err instanceof Error
-            ? err.message
-            : typeof err === "string"
-            ? err
-            : JSON.stringify(err, null, 2)
-        }`
+        `AI Error: ${message}\n\nCheck that OPENROUTER_API_KEY exists in .env.local and that app/api/ai/route.ts is created.`
       );
     }
 
     setLoading(false);
   }
 
+  function loadManualJson() {
+    try {
+      const cleaned = cleanJsonText(manualJson);
+      const cadJson = JSON.parse(cleaned);
+      loadCadJson(cadJson);
+    } catch (err) {
+      setResponse(
+        `Manual JSON Error: ${
+          err instanceof Error ? err.message : JSON.stringify(err)
+        }`
+      );
+    }
+  }
+
+  function loadGearPreset() {
+    const gear = {
+      object: "single spur gear",
+      units: "inch",
+      designIntent: {
+        category: "single_part",
+        objectType: "spur gear",
+        mainPurpose: "rotational power transmission",
+        outerDiameter: 3,
+        thickness: 0.4,
+        centerBore: 0.5,
+        toothCount: 24,
+      },
+      parts: [
+        {
+          type: "cylinder",
+          name: "gear_body",
+          radius: 1.5,
+          height: 0.4,
+          orientation: { axis: "z" },
+          position: { x: 0, y: 0, z: 0 },
+          rotation: { x: 0, y: 0, z: 0 },
+          material: "steel",
+        },
+        {
+          type: "hole",
+          name: "center_bore",
+          radius: 0.25,
+          height: 0.5,
+          orientation: { axis: "z" },
+          position: { x: 0, y: 0, z: 0 },
+          rotation: { x: 0, y: 0, z: 0 },
+        },
+        ...Array.from({ length: 24 }).map((_, i) => {
+          const angle = (i * 360) / 24;
+          const radians = (angle * Math.PI) / 180;
+
+          return {
+            type: "box",
+            name: `tooth_${i + 1}`,
+            width: 0.18,
+            depth: 0.34,
+            height: 0.4,
+            position: {
+              x: Math.cos(radians) * 1.65,
+              y: Math.sin(radians) * 1.65,
+              z: 0,
+            },
+            rotation: { x: 0, y: 0, z: angle },
+            material: "steel",
+          };
+        }),
+      ],
+      engineeringAnalysis: {
+        materialChoice:
+          "Steel is strong and wear resistant for functional gear teeth.",
+        manufacturingMethod:
+          "Can be CNC machined, laser cut from plate, or 3D printed as a prototype.",
+        weakPoints:
+          "The rectangular teeth are visual placeholders; real gears need involute tooth profiles.",
+        improvements:
+          "Add involute tooth curves, keyway, hub, fillets, and toleranced bore.",
+      },
+    };
+
+    setManualJson(JSON.stringify(gear, null, 2));
+    loadCadJson(gear);
+  }
+
   async function createOnshapeDoc() {
     setCreatingOnshape(true);
-
     setOnshapeUrl("");
 
     try {
-      const cadJson = response
-        ? JSON.parse(cleanJsonText(response))
-        : null;
+      if (!cadJsonObj) {
+        throw new Error("No CAD JSON loaded.");
+      }
 
-      const docName = cadJson?.object
-        ? `PromptShape - ${cadJson.object}`
+      const docName = cadJsonObj?.object
+        ? `PromptShape - ${cadJsonObj.object}`
         : "PromptShape Generated CAD";
 
       const res = await fetch("/api/onshape/create", {
@@ -118,16 +191,14 @@ export default function Home() {
         },
         body: JSON.stringify({
           name: docName,
-          cad: cadJson,
+          cad: cadJsonObj,
         }),
       });
 
       const data = await res.json();
 
       if (!res.ok || !data.success) {
-        throw new Error(
-          data.error || "Failed to create Onshape document."
-        );
+        throw new Error(data.error || "Failed to create Onshape document.");
       }
 
       setOnshapeUrl(data.url);
@@ -150,26 +221,23 @@ export default function Home() {
 
   async function copyFeatureScript() {
     if (!featureScript) return;
-
     await navigator.clipboard.writeText(featureScript);
   }
 
   return (
     <main className="min-h-screen bg-zinc-950 text-white flex flex-col items-center p-8">
       <div className="w-full max-w-5xl">
-        <h1 className="text-5xl font-bold mb-4">
-          PromptShape
-        </h1>
+        <h1 className="text-5xl font-bold mb-4">PromptShape</h1>
 
         <p className="text-zinc-400 mb-8">
-          AI CAD assistant using design intent, procedural generators,
-          3D preview, engineering reasoning, and FeatureScript.
+          AI CAD assistant using OpenRouter, exact CAD JSON, 3D preview,
+          engineering reasoning, FeatureScript, and Onshape export.
         </p>
 
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Describe a mechanical design, vehicle, robot chassis, enclosure, gearbox, bracket, aerodynamic body, or engineered system..."
+          placeholder="Example: Create a pillow block bearing support for a horizontal rotating shaft. Do not make a bracket."
           className="w-full h-40 rounded-xl bg-zinc-900 border border-zinc-700 p-4 text-white outline-none resize-none"
         />
 
@@ -179,21 +247,22 @@ export default function Home() {
             disabled={loading}
             className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 transition font-semibold disabled:opacity-50"
           >
-            {loading ? "Generating..." : "Generate CAD"}
+            {loading ? "Generating..." : "Generate CAD with OpenRouter"}
+          </button>
+
+          <button
+            onClick={loadGearPreset}
+            className="px-6 py-3 rounded-xl bg-zinc-700 hover:bg-zinc-600 transition font-semibold"
+          >
+            Load Gear Preset
           </button>
 
           <button
             onClick={createOnshapeDoc}
-            disabled={
-              creatingOnshape ||
-              !response ||
-              response.startsWith("Error")
-            }
+            disabled={creatingOnshape || !cadJsonObj}
             className="px-6 py-3 rounded-xl bg-green-600 hover:bg-green-500 transition font-semibold disabled:opacity-50"
           >
-            {creatingOnshape
-              ? "Creating..."
-              : "Create Onshape Document"}
+            {creatingOnshape ? "Creating..." : "Create Onshape Document"}
           </button>
 
           <button
@@ -202,6 +271,24 @@ export default function Home() {
             className="px-6 py-3 rounded-xl bg-purple-600 hover:bg-purple-500 transition font-semibold disabled:opacity-50"
           >
             Copy FeatureScript
+          </button>
+        </div>
+
+        <div className="mt-8">
+          <h2 className="text-2xl font-semibold mb-4">Manual CAD JSON</h2>
+
+          <textarea
+            value={manualJson}
+            onChange={(e) => setManualJson(e.target.value)}
+            placeholder="Paste CAD JSON here..."
+            className="w-full h-56 rounded-xl bg-zinc-900 border border-zinc-700 p-4 text-white outline-none resize-none font-mono text-sm"
+          />
+
+          <button
+            onClick={loadManualJson}
+            className="mt-4 px-6 py-3 rounded-xl bg-orange-600 hover:bg-orange-500 transition font-semibold"
+          >
+            Load Manual JSON
           </button>
         </div>
 
@@ -217,18 +304,14 @@ export default function Home() {
                 Open Onshape Document
               </a>
             ) : (
-              <p className="text-red-400 whitespace-pre-wrap">
-                {onshapeUrl}
-              </p>
+              <p className="text-red-400 whitespace-pre-wrap">{onshapeUrl}</p>
             )}
           </div>
         )}
 
         {cadJsonObj?.designIntent && (
           <div className="mt-8 rounded-xl border border-zinc-700 bg-zinc-900 p-5 space-y-2">
-            <h2 className="text-2xl font-semibold mb-3">
-              Design Intent
-            </h2>
+            <h2 className="text-2xl font-semibold mb-3">Design Intent</h2>
 
             <p>
               <b>Category:</b>{" "}
@@ -236,44 +319,20 @@ export default function Home() {
             </p>
 
             <p>
-              <b>Style:</b>{" "}
-              {cadJsonObj.designIntent.style ||
-                cadJsonObj.designIntent.objectType}
+              <b>Object Type:</b>{" "}
+              {cadJsonObj.designIntent.objectType || cadJsonObj.object}
             </p>
 
             <p>
-              <b>Wheelbase:</b>{" "}
-              {cadJsonObj.designIntent.wheelbase ?? "n/a"} in
-            </p>
-
-            <p>
-              <b>Track Width:</b>{" "}
-              {cadJsonObj.designIntent.trackWidth ?? "n/a"} in
-            </p>
-
-            <p>
-              <b>Ride Height:</b>{" "}
-              {cadJsonObj.designIntent.rideHeight ?? "n/a"} in
-            </p>
-
-            <p>
-              <b>CG Goal:</b>{" "}
-              {cadJsonObj.designIntent.centerOfGravityGoal}
-            </p>
-
-            <p>
-              <b>Aero Goal:</b>{" "}
-              {cadJsonObj.designIntent.aeroGoal}
+              <b>Purpose:</b>{" "}
+              {cadJsonObj.designIntent.mainPurpose || "Not specified"}
             </p>
           </div>
         )}
 
         {cadJsonObj && (
           <div className="mt-8">
-            <h2 className="text-2xl font-semibold mb-4">
-              3D CAD Preview
-            </h2>
-
+            <h2 className="text-2xl font-semibold mb-4">3D CAD Preview</h2>
             <CadViewer cad={cadJsonObj} />
           </div>
         )}
@@ -319,9 +378,7 @@ export default function Home() {
         )}
 
         <div className="mt-8">
-          <h2 className="text-2xl font-semibold mb-4">
-            CAD JSON
-          </h2>
+          <h2 className="text-2xl font-semibold mb-4">CAD JSON</h2>
 
           <pre className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 overflow-x-auto whitespace-pre-wrap text-green-400">
             {response || "Your CAD JSON will appear here..."}
@@ -330,9 +387,7 @@ export default function Home() {
 
         <div className="mt-8">
           <div className="flex items-center justify-between gap-4 mb-4">
-            <h2 className="text-2xl font-semibold">
-              FeatureScript Output
-            </h2>
+            <h2 className="text-2xl font-semibold">FeatureScript Output</h2>
 
             <button
               onClick={copyFeatureScript}
@@ -344,8 +399,7 @@ export default function Home() {
           </div>
 
           <pre className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 overflow-x-auto whitespace-pre-wrap text-orange-400">
-            {featureScript ||
-              "Generated FeatureScript will appear here..."}
+            {featureScript || "Generated FeatureScript will appear here..."}
           </pre>
         </div>
       </div>

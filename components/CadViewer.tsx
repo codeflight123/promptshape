@@ -17,16 +17,11 @@ type CadPart = {
   orientation?: { axis?: "x" | "y" | "z" };
   rotation?: { x?: number; y?: number; z?: number };
   position?: { x?: number; y?: number; z?: number };
-  sections?: {
-    x: number;
-    y: number;
-    z: number;
-    width: number;
-    height: number;
-  }[];
+  sections?: { x: number; y: number; z: number; width: number; height: number }[];
   span?: number;
   chord?: number;
   thickness?: number;
+  material?: string;
 };
 
 type CadJson = {
@@ -39,6 +34,88 @@ function degreesToRadians(value: number | undefined) {
   return ((value ?? 0) * Math.PI) / 180;
 }
 
+function materialColor(part: CadPart) {
+  const material = (part.material || "").toLowerCase();
+
+  if (material.includes("steel")) return "#9ca3af";
+  if (material.includes("aluminum")) return "#cbd5e1";
+  if (material.includes("carbon")) return "#1f2937";
+  if (material.includes("rubber")) return "#020617";
+  if (material.includes("glass")) return "#93c5fd";
+  if (material.includes("red")) return "#ef4444";
+  if (material.includes("black")) return "#020617";
+
+  if (part.type === "hole") return "#020617";
+  if (part.type === "wheel") return "#020617";
+  if (part.type === "cylinder") return "#f97316";
+  if (part.type === "box") return "#2563eb";
+  if (part.type === "triangular_prism") return "#38bdf8";
+  if (part.type === "wedge") return "#38bdf8";
+  if (part.type === "loft") return "#94a3b8";
+  if (part.type === "airfoil") return "#111827";
+
+  return "#64748b";
+}
+
+function StandardMaterial({ part }: { part: CadPart }) {
+  return (
+    <meshStandardMaterial
+      color={materialColor(part)}
+      flatShading={false}
+      polygonOffset
+      polygonOffsetFactor={1}
+      polygonOffsetUnits={1}
+    />
+  );
+}
+
+function TriangularPrismMesh({ part }: { part: CadPart }) {
+  const w = part.width ?? 0.25;
+  const d = part.depth ?? 2;
+  const h = part.height ?? 2;
+
+  const x0 = -w / 2;
+  const x1 = w / 2;
+  const y0 = -d / 2;
+  const y1 = d / 2;
+  const z0 = -h / 2;
+  const z1 = h / 2;
+
+  const vertices = new Float32Array([
+    x0, y0, z0,
+    x0, y1, z0,
+    x0, y0, z1,
+
+    x1, y0, z0,
+    x1, y1, z0,
+    x1, y0, z1,
+  ]);
+
+  const indices = [
+    0, 1, 2,
+    3, 5, 4,
+
+    0, 3, 4,
+    0, 4, 1,
+
+    0, 2, 5,
+    0, 5, 3,
+
+    1, 4, 5,
+    1, 5, 2,
+  ];
+
+  return (
+    <mesh>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[vertices, 3]} />
+        <bufferAttribute attach="index" args={[new Uint16Array(indices), 1]} />
+      </bufferGeometry>
+      <StandardMaterial part={part} />
+    </mesh>
+  );
+}
+
 function CadPartMesh({ part }: { part: CadPart }) {
   const x = part.position?.x ?? 0;
   const y = part.position?.y ?? 0;
@@ -49,7 +126,7 @@ function CadPartMesh({ part }: { part: CadPart }) {
   const rz = degreesToRadians(part.rotation?.z);
 
   if (part.type === "loft") {
-    return <LoftMesh sections={part.sections ?? []} color="#94a3b8" />;
+    return <LoftMesh sections={part.sections ?? []} color={materialColor(part)} />;
   }
 
   if (part.type === "wheel") {
@@ -76,12 +153,18 @@ function CadPartMesh({ part }: { part: CadPart }) {
   }
 
   if (part.operation === "subtract" || part.type === "hole") {
+    const radius = part.radius ?? 0.2;
+    const height = part.height ?? 0.5;
+
+    let holeRotation: [number, number, number] = [0, 0, 0];
+
+    if (part.orientation?.axis === "x") holeRotation = [0, 0, Math.PI / 2];
+    if (part.orientation?.axis === "y") holeRotation = [Math.PI / 2, 0, 0];
+
     return (
-      <mesh position={[x, z, y]} rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry
-          args={[part.radius ?? 0.2, part.radius ?? 0.2, part.height ?? 0.5, 32]}
-        />
-        <meshStandardMaterial color="#ef4444" transparent opacity={0.45} />
+      <mesh position={[x, z, y]} rotation={holeRotation}>
+        <cylinderGeometry args={[radius, radius, height, 64]} />
+        <meshStandardMaterial color="#020617" />
       </mesh>
     );
   }
@@ -90,22 +173,15 @@ function CadPartMesh({ part }: { part: CadPart }) {
     return (
       <mesh position={[x, z, y]} rotation={[rx, ry, rz]}>
         <boxGeometry args={[part.width ?? 1, part.height ?? 1, part.depth ?? 1]} />
-        <meshStandardMaterial color="#2563eb" />
+        <StandardMaterial part={part} />
       </mesh>
     );
   }
 
-  if (part.type === "wedge") {
+  if (part.type === "triangular_prism" || part.type === "wedge") {
     return (
       <mesh position={[x, z, y]} rotation={[rx, ry, rz]}>
-        <coneGeometry
-          args={[
-            Math.max(part.width ?? 1, part.depth ?? 1) / 2,
-            part.height ?? 1,
-            4,
-          ]}
-        />
-        <meshStandardMaterial color="#38bdf8" />
+        <TriangularPrismMesh part={part} />
       </mesh>
     );
   }
@@ -127,7 +203,7 @@ function CadPartMesh({ part }: { part: CadPart }) {
     return (
       <mesh position={[x, z, y]} rotation={cylinderRotation}>
         <cylinderGeometry args={[radius, radius, height, 64]} />
-        <meshStandardMaterial color="#f97316" />
+        <StandardMaterial part={part} />
       </mesh>
     );
   }
@@ -136,7 +212,7 @@ function CadPartMesh({ part }: { part: CadPart }) {
     return (
       <mesh position={[x, z, y]} rotation={[rx, ry, rz]}>
         <sphereGeometry args={[part.radius ?? 0.5, 32, 32]} />
-        <meshStandardMaterial color="#22c55e" />
+        <StandardMaterial part={part} />
       </mesh>
     );
   }
@@ -145,20 +221,10 @@ function CadPartMesh({ part }: { part: CadPart }) {
     const radius = part.radius ?? (part.width ? part.width / 2 : 0.75);
     const height = part.height ?? 1.5;
 
-    let coneRotation: [number, number, number] = [rx, ry, rz];
-
-    if (part.orientation?.axis === "x") {
-      coneRotation = [rx, ry, Math.PI / 2 + rz];
-    }
-
-    if (part.orientation?.axis === "y") {
-      coneRotation = [Math.PI / 2 + rx, ry, rz];
-    }
-
     return (
-      <mesh position={[x, z, y]} rotation={coneRotation}>
+      <mesh position={[x, z, y]} rotation={[rx, ry, rz]}>
         <coneGeometry args={[radius, height, 64]} />
-        <meshStandardMaterial color="#a855f7" />
+        <StandardMaterial part={part} />
       </mesh>
     );
   }
